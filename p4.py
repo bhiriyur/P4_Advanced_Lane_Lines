@@ -2,10 +2,18 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 import glob
-
+from moviepy.editor import VideoFileClip
+import pickle
+import os.path
 
 def calibrate_camera(plot=False):
     """Calibrate camera based on chessboard images"""
+
+    # See if we have stored calibration info previously
+    calfile = 'camera_cal.pkl'
+    if os.path.isfile(calfile):
+        data = pickle.load(open(calfile, 'rb'))
+        return data[0],data[1]
 
     # Set up object points
     nx = 9
@@ -39,6 +47,10 @@ def calibrate_camera(plot=False):
     # Now calibrate camera
     ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, img.shape[:2],None,None)
 
+    # Store in calfile for future
+    data = [mtx,dist]
+    pickle.dump(data, open(calfile, 'wb'))
+
     return mtx, dist
 
 
@@ -48,7 +60,6 @@ def undistort_image(img, mtx, dist):
 
 def transform_binary(img, sobel_kernel=3, s_thresh=(150, 255), sx_thresh=(20, 100)):
     """Canny-like transform to binary image"""
-    img = np.copy(img)
 
     # Convert to HSV color space and separate the V channel
     hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HLS).astype(np.float)
@@ -70,30 +81,31 @@ def transform_binary(img, sobel_kernel=3, s_thresh=(150, 255), sx_thresh=(20, 10
     s_binary = np.zeros_like(s_channel)
     s_binary[(s_channel >= s_thresh[0]) & (s_channel <= s_thresh[1])] = 1
 
-    combined_binary = np.zeros_like(sxbinary)
-    combined_binary[(s_binary == 1) | (sxbinary == 1)] = 1
+    combined_binary = np.zeros_like(s_binary,np.uint8)
+    combined_binary[(s_binary == 1) | (sxbinary == 1)] = 255
 
-    return combined_binary
+    color_binary = np.dstack((combined_binary,combined_binary,combined_binary))
 
-def perspective_transform(img):
+    return color_binary
+
+def perspective_transform(xsize,ysize):
     """Transforms the camera image to top-down view"""
-    src = np.float32([[550, 480],
-           [733, 480],
-           [1041, 678],
-           [265, 678]])
+    src = np.float32(
+        [[610, 440],
+         [670, 440],
+         [1041, 678],
+         [265, 678]])
 
-    xoff, yoff = 300, 10
-    ysize, xsize = img.shape
-    dst = np.float32([[xoff, yoff],
-           [xsize-xoff, yoff],
-           [xsize-xoff, ysize-yoff],
-           [xoff, ysize-yoff]])
+    xoff, yoff = 300, 0
+    dst = np.float32(
+        [[xoff, yoff],
+         [xsize-xoff, yoff],
+         [xsize-xoff, ysize-yoff],
+         [xoff, ysize-yoff]])
     M = cv2.getPerspectiveTransform(src, dst)
     Minv = cv2.getPerspectiveTransform(dst, src)
 
-    warped = cv2.warpPerspective(img, M, (xsize,ysize), flags=cv2.INTER_LINEAR)
-
-    return warped, M, Minv
+    return M, Minv
 
 def detect_lanelines_near(binary_warped,left_fit, right_fit):
     # Assume you now have a new warped binary image
@@ -117,16 +129,19 @@ def detect_lanelines_near(binary_warped,left_fit, right_fit):
     # Fit a second order polynomial to each
     left_fit = np.polyfit(lefty, leftx, 2)
     right_fit = np.polyfit(righty, rightx, 2)
-
-    return left_fit, right_fit
+    out_img = np.dstack((binary_warped, binary_warped, binary_warped)) * 255
+    return left_fit, right_fit, out_img
 
 def detect_lanelines_swin(binary_warped):
     """This part of the code was based on Udacity module content"""
     # Assuming you have created a warped binary image called "binary_warped"
+
     # Take a histogram of the bottom half of the image
     histogram = np.sum(binary_warped[int(binary_warped.shape[0]/2):, :], axis=0)
+
     # Create an output image to draw on and  visualize the result
     out_img = np.dstack((binary_warped, binary_warped, binary_warped)) * 255
+
     # Find the peak of the left and right halves of the histogram
     # These will be the starting point for the left and right lines
     midpoint = np.int(histogram.shape[0] / 2)
@@ -134,20 +149,26 @@ def detect_lanelines_swin(binary_warped):
     rightx_base = np.argmax(histogram[midpoint:]) + midpoint
 
     # Choose the number of sliding windows
-    nwindows = 9
+    nwindows = 11
+
     # Set height of windows
     window_height = np.int(binary_warped.shape[0] / nwindows)
+
     # Identify the x and y positions of all nonzero pixels in the image
     nonzero = binary_warped.nonzero()
     nonzeroy = np.array(nonzero[0])
     nonzerox = np.array(nonzero[1])
+
     # Current positions to be updated for each window
     leftx_current = leftx_base
     rightx_current = rightx_base
+
     # Set the width of the windows +/- margin
     margin = 100
+
     # Set minimum number of pixels found to recenter window
     minpix = 50
+
     # Create empty lists to receive left and right lane pixel indices
     left_lane_inds = []
     right_lane_inds = []
@@ -161,17 +182,26 @@ def detect_lanelines_swin(binary_warped):
         win_xleft_high = leftx_current + margin
         win_xright_low = rightx_current - margin
         win_xright_high = rightx_current + margin
+
         # Draw the windows on the visualization image
         cv2.rectangle(out_img, (win_xleft_low, win_y_low), (win_xleft_high, win_y_high), (0, 255, 0), 2)
         cv2.rectangle(out_img, (win_xright_low, win_y_low), (win_xright_high, win_y_high), (0, 255, 0), 2)
+
         # Identify the nonzero pixels in x and y within the window
-        good_left_inds = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) & (nonzerox >= win_xleft_low) & (
-        nonzerox < win_xleft_high)).nonzero()[0]
-        good_right_inds = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) & (nonzerox >= win_xright_low) & (
-        nonzerox < win_xright_high)).nonzero()[0]
+        good_left_inds = ((nonzeroy >= win_y_low) &
+                          (nonzeroy < win_y_high) &
+                          (nonzerox >= win_xleft_low) &
+                          (nonzerox < win_xleft_high)).nonzero()[0]
+
+        good_right_inds = ((nonzeroy >= win_y_low) &
+                           (nonzeroy < win_y_high) &
+                           (nonzerox >= win_xright_low) &
+                           (nonzerox < win_xright_high)).nonzero()[0]
+
         # Append these indices to the lists
         left_lane_inds.append(good_left_inds)
         right_lane_inds.append(good_right_inds)
+
         # If you found > minpix pixels, recenter next window on their mean position
         if len(good_left_inds) > minpix:
             leftx_current = np.int(np.mean(nonzerox[good_left_inds]))
@@ -192,9 +222,126 @@ def detect_lanelines_swin(binary_warped):
     left_fit = np.polyfit(lefty, leftx, 2)
     right_fit = np.polyfit(righty, rightx, 2)
 
-    return left_fit, right_fit
+    return left_fit, right_fit, out_img
 
-def pipeline(img,mtx=None,dist=None,plot=False):
+def static_vars(**kwargs):
+    def decorate(func):
+        for k in kwargs:
+            setattr(func, k, kwargs[k])
+        return func
+    return decorate
+
+@static_vars(old_left_fit=None, old_right_fit=None)
+def detect_lanelines(binary_warped,alpha=1.0,average_curves=True):
+    olf = detect_lanelines.old_left_fit
+    orf = detect_lanelines.old_right_fit
+
+    # The lane-detection frmo previous curve does not work properly when there is too much deviation
+    #left_fit, right_fit, out_img = detect_lanelines_near(binary_warped, olf, orf)
+
+    # Detect using moving windows
+    left_fit, right_fit, out_img = detect_lanelines_swin(binary_warped)
+    if olf is None or orf is None:
+        olf = left_fit
+        orf = right_fit
+
+    # Left and right curves should have same coefficients on left and right for second order terms
+    if average_curves:
+        left_fit[0] = np.average([left_fit[0],right_fit[0]])
+        right_fit[0] = left_fit[0]
+        left_fit[1] = np.average([left_fit[1],right_fit[1]])
+        right_fit[1] = left_fit[1]
+
+        # Don't get lanes shift too much
+        lane_width = 680.0
+        center = np.average([left_fit[2],right_fit[2]])
+        left_fit[2] = center - lane_width/2.0
+        right_fit[2] = center + lane_width/2.0
+
+
+    # Moving average of curve fit
+    left_fit = alpha*left_fit + (1-alpha)*olf
+    right_fit = alpha * right_fit + (1-alpha) * orf
+
+
+    detect_lanelines.old_left_fit = left_fit
+    detect_lanelines.old_right_fit = right_fit
+
+    return left_fit, right_fit, out_img
+
+def overlay_lane(undistorted, left_fit, right_fit, Minv):
+
+    ny, nx, nc = undistorted.shape
+
+    lfit = lambda y: left_fit[0] * y ** 2 + left_fit[1] * y + left_fit[2]
+    rfit = lambda y: right_fit[0] * y ** 2 + right_fit[1] * y + right_fit[2]
+
+    # Generate x and y values for plotting
+    ybar = np.linspace(0, undistorted.shape[0] - 1, undistorted.shape[0])
+    lxbar = lfit(ybar)
+    rxbar = rfit(ybar)
+
+    # Generate an overlay from left and right lanes
+    n = len(ybar)
+    polypoints = np.zeros((2*n, 2))
+    polypoints[:n, 0] = lxbar
+    polypoints[:n, 1] = ybar
+    polypoints[n:, 0] = rxbar[-1::-1]
+    polypoints[n:, 1] = ybar[-1::-1]
+
+    overlay = np.zeros_like(undistorted)
+    output = undistorted.copy()
+
+    cv2.fillPoly(overlay, np.int32([polypoints]), (0, 255, 0))
+
+    # Draw lane lines
+    for i in range(n-1):
+        x1,y1 = np.int(lxbar[i]), np.int(ybar[i])
+        x2,y2 = np.int(lxbar[i+1]),np.int(ybar[i+1])
+        cv2.line(overlay, (x1, y1), (x2, y2),(255,255,255),30)
+        x1,y1 = np.int(rxbar[i]), np.int(ybar[i])
+        x2,y2 = np.int(rxbar[i+1]),np.int(ybar[i+1])
+        cv2.line(overlay, (x1, y1), (x2, y2),(255,255,255),30)
+
+    # Draw offset points
+    y0 = ny-5
+    x0 = np.int(0.5*(lfit(y0) + rfit(y0)))
+    cv2.drawMarker(overlay,(x0,y0),(255,0,0),cv2.MARKER_TRIANGLE_UP,
+                  markerSize=10, thickness=1, line_type=cv2.LINE_AA)
+
+    y1 = ny-5
+    x1 = np.int(nx/2)+25
+    cv2.drawMarker(overlay, (x1, y1), (0, 0, 255), cv2.MARKER_CROSS,
+                   markerSize=5, thickness=1, line_type=cv2.LINE_AA)
+
+    yfac = 3.7/700 # Pixel to meters (Y)
+    xfac = 100.0/720 # Pixel to meters (X)
+    offset_distance = np.round((x0-x1)*yfac,2)
+
+
+    # Curvature
+    yvals = np.linspace(0,ny,10)
+    xvals = lfit(yvals)
+
+    xnew = xvals*xfac
+    ynew = yvals*yfac
+    fitnew = np.polyfit(xnew,ynew,2)
+
+    A = fitnew[0]
+    B = fitnew[1]
+
+    rcurve = ((1 + (2*A*(y0*yfac)+B)**2)**1.5) / np.absolute(2*A)
+    #print(left_fit,A,B,rcurve)
+    rcurve = np.round(rcurve,2)
+    overlay_unwarp = cv2.warpPerspective(overlay, Minv, (nx, ny), flags=cv2.INTER_LINEAR)
+
+    # apply the overlay
+    overlaid=cv2.addWeighted(output, 1, overlay_unwarp, 0.3, 0)
+
+    return overlaid,overlay,overlay_unwarp, offset_distance, rcurve
+
+
+def pipeline(img,mtx=None,dist=None,M=None,Minv=None,plot=False):
     """
     Perform the following steps in sequence to find lanes
     * Compute the camera calibration matrix and distortion coefficients given a set of chessboard images.
@@ -206,68 +353,84 @@ def pipeline(img,mtx=None,dist=None,plot=False):
     * Warp the detected lane boundaries back onto the original image.
     * Output visual display of the lane boundaries and numerical estimation of lane curvature and vehicle position.
     """
+    # Get size of image
+    ysize, xsize, nc = img.shape
+
+    # Calibrate camera
     if mtx is None or dist is None:
         mtx, dist = calibrate_camera()
 
+    if M is None or Minv is None:
+        M, Minv = perspective_transform(xsize, ysize)
+
+    # Undistort camera
     undistorted=undistort_image(img, mtx, dist)
-    sbin = transform_binary(undistorted)
-    binary_warped, M, Minv = perspective_transform(sbin)
-    left_fit, right_fit = detect_lanelines_swin(binary_warped)
 
-    # Generate x and y values for plotting
-    ploty = np.linspace(0, binary_warped.shape[0] - 1, binary_warped.shape[0])
-    left_fitx = left_fit[0] * ploty ** 2 + left_fit[1] * ploty + left_fit[2]
-    right_fitx = right_fit[0] * ploty ** 2 + right_fit[1] * ploty + right_fit[2]
+    # Binary transformation (gradient, sobel operations)
+    lane_pixels = transform_binary(undistorted)
 
-    # Generate an overlay from left and right lanes
-    n1 = len(left_fitx)
-    n2 = len(right_fitx)
-    polypoints = np.zeros((n1+n2,2))
-    polypoints[:n1, 0] = left_fitx
-    polypoints[:n1, 1] = ploty
-    polypoints[n1:, 0] = right_fitx[-1::-1]
-    polypoints[n1:, 1] = ploty[-1::-1]
+    # Perspective transformation
+    binary_warped = cv2.warpPerspective(lane_pixels, M, (xsize, ysize), flags=cv2.INTER_LINEAR)
+    undist_warped = cv2.warpPerspective(undistorted, M, (xsize, ysize), flags=cv2.INTER_LINEAR)
 
-    overlay = np.zeros_like(undistorted)
-    output = undistorted.copy()
+    left_fit, right_fit, win_img = detect_lanelines(binary_warped[:,:,0],alpha=0.9)
+    overlaid,overlay1,overlay2,offset_distance,rcurve= overlay_lane(undistorted, left_fit, right_fit, Minv)
 
-    cv2.fillPoly(overlay, np.int32([polypoints]),(0, 255, 0))
-    overlay = cv2.warpPerspective(overlay, Minv, (img.shape[1],img.shape[0]), flags=cv2.INTER_LINEAR)
-    # apply the overlay
-    alpha = 0.5
-    dst = cv2.addWeighted(overlay, alpha, output, 1 - alpha, 0)
+    out = diag_screen(overlaid, undistorted, undist_warped, lane_pixels, binary_warped, win_img, overlay1,overlay2,offset_distance,rcurve)
 
-    nx, ny = 2,2
-    if plot:
-        plt.figure(figsize=(10,8))
-        plt.subplot(nx,ny,1)
-        plt.imshow(img)
+    return out
 
-        plt.subplot(nx,ny,2)
-        plt.imshow(undistorted)      
-
-        plt.subplot(nx,ny,3)
-        plt.imshow(sbin,cmap='gray')
-
-        plt.subplot(nx,ny,4)
-        plt.imshow(dst)
-        #plt.plot(polypoints[:,0],polypoints[:,1],color='yellow',lw=4)
-        #plt.plot(right_fitx, ploty, color='yellow', lw=4)
-        plt.show()
+def process_video(vidfile,writeToFile=True):
+    mtx, dist = calibrate_camera()
+    lanevid = vidfile.split('.')[0] + '_out.mp4'
+    clip1 = VideoFileClip(vidfile)
+    vpipeline = lambda x: pipeline(x,mtx,dist)
+    white_clip = clip1.fl_image(vpipeline)
+    #white_clip.preview(fps=25)
+    if writeToFile: white_clip.write_videofile(lanevid, audio=False)
+    return lanevid
 
 
-    #detectLanes()
-    #computeCurvature()
-    #warpBack()
-    #outputCurvature()
-    return
+def diag_screen(mainDiagScreen,diag1,diag2,diag3,diag4,diag5,diag6,diag7,offset=0,curvature=0):
+    # middle panel text example
+    # using cv2 for drawing text in diagnostic pipeline.
+    font = cv2.FONT_HERSHEY_COMPLEX
+    middlepanel = np.zeros((320, 240, 3), dtype=np.uint8)
+    cv2.putText(middlepanel, 'Curvature:{} m.'.format(curvature), (20, 60), font, 0.5, (255,255,255), 1)
+    cv2.putText(middlepanel, 'Offset:{} m.'.format(offset), (20, 90), font, 0.5, (255,255,255), 1)
+
+    # assemble the screen
+    diagScreen = np.zeros((960, 1600, 3),np.uint8)
+    diagScreen[0:720, 0:1280] = mainDiagScreen
+
+    # Right screens
+    diagScreen[0:240, 1280:1600] = cv2.resize(diag1, (320,240), interpolation=cv2.INTER_AREA)
+    diagScreen[240:480, 1280:1600] = cv2.resize(diag2, (320,240), interpolation=cv2.INTER_AREA)
+    diagScreen[480:720, 1280:1600] = cv2.resize(middlepanel, (320, 240), interpolation=cv2.INTER_AREA)
+
+    # Bottom screens
+    diagScreen[720:960, 0:320] = cv2.resize(diag3, (320,240), interpolation=cv2.INTER_AREA)
+    diagScreen[720:960, 320:640] = cv2.resize(diag4, (320,240), interpolation=cv2.INTER_AREA)
+    diagScreen[720:960, 640:960] = cv2.resize(diag5, (320,240), interpolation=cv2.INTER_AREA)
+    diagScreen[720:960, 960:1280] = cv2.resize(diag6, (320, 240), interpolation=cv2.INTER_AREA)
+    diagScreen[720:960, 1280:1600] = cv2.resize(diag7, (320, 240), interpolation=cv2.INTER_AREA)
+
+
+
+    return diagScreen
+
 
 
 if __name__=='__main__':
     """Main thread entry"""
+    vidfile = 'project_video.mp4'
+    lanevid = process_video(vidfile)
+    print("saved to {}".format(lanevid))
 
-    mtx, dist = calibrate_camera()
-
-    for test_image_file in glob.glob('test_images/*.jpg'):
-        test_image = plt.imread(test_image_file)
-        pipeline(test_image, mtx, dist, plot=True)
+    # mtx, dist = calibrate_camera()
+    #
+    # for test_image_file in glob.glob('test_images/*.jpg'):
+    #     test_image = cv2.imread(test_image_file)
+    #     screen = pipeline(test_image, mtx, dist)
+    #     cv2.imshow('Diagnostic Screen',screen)
+    #     cv2.waitKey()
