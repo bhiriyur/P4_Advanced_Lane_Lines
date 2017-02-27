@@ -62,9 +62,9 @@ def transform_binary(img, sobel_kernel=3, s_thresh=(150, 255), sx_thresh=(20, 10
     """Canny-like transform to binary image"""
 
     # Convert to HSV color space and separate the V channel
-    hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HLS).astype(np.float)
-    l_channel = hsv[:,:,1]
-    s_channel = hsv[:,:,2]
+    hls = cv2.cvtColor(img, cv2.COLOR_RGB2HLS).astype(np.float)
+    l_channel = hls[:, :, 1]
+    s_channel = hls[:, :, 2]
 
     # Sobel 
     sobelx = cv2.Sobel(l_channel, cv2.CV_64F, 1, 0, ksize=sobel_kernel) # Take the derivative in x
@@ -86,7 +86,13 @@ def transform_binary(img, sobel_kernel=3, s_thresh=(150, 255), sx_thresh=(20, 10
 
     color_binary = np.dstack((combined_binary,combined_binary,combined_binary))
 
-    return color_binary
+    # pick from colors
+    yellow = cv2.inRange(hls,(10,0,200),(40,200,255))
+    white =  cv2.inRange(hls,(10,200,150),(40,250,255))
+    yw = yellow | white | combined_binary
+    yw_color = np.dstack((yw,yw,yw))
+
+    return yw_color #color_binary
 
 def perspective_transform(xsize,ysize):
     """Transforms the camera image to top-down view"""
