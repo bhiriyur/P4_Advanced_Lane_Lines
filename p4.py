@@ -87,8 +87,14 @@ def transform_binary(img, sobel_kernel=3, s_thresh=(150, 255), sx_thresh=(20, 10
     color_binary = np.dstack((combined_binary,combined_binary,combined_binary))
 
     # pick from colors
-    yellow = cv2.inRange(hls,(10,0,200),(40,200,255))
-    white =  cv2.inRange(hls,(10,200,150),(40,250,255))
+
+    # hls = cv2.cvtColor(img, cv2.COLOR_RGB2HLS)
+    # yellow = cv2.inRange(hls,(10,0,200),(40,200,255))
+    # white =  cv2.inRange(hls,(10,200,150),(40,250,255))
+
+    hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+    yellow = cv2.inRange(hsv,(0,100,100),(50,255,255))
+    white =  cv2.inRange(hsv,(20,0,180),(255,80,255))
     yw = yellow | white | combined_binary
     yw_color = np.dstack((yw,yw,yw))
 
@@ -142,11 +148,13 @@ def detect_lanelines_swin(binary_warped):
     """This part of the code was based on Udacity module content"""
     # Assuming you have created a warped binary image called "binary_warped"
 
+    ny, nx = binary_warped.shape
+
     # Take a histogram of the bottom half of the image
     histogram = np.sum(binary_warped[int(binary_warped.shape[0]/2):, :], axis=0)
 
     # Create an output image to draw on and  visualize the result
-    out_img = np.dstack((binary_warped, binary_warped, binary_warped)) * 255
+    out_img = np.dstack((binary_warped, binary_warped, binary_warped)) #* 255
 
     # Find the peak of the left and right halves of the histogram
     # These will be the starting point for the left and right lines
@@ -180,7 +188,9 @@ def detect_lanelines_swin(binary_warped):
     right_lane_inds = []
 
     # Step through the windows one by one
+    count, lcount, rcount = 0, 0, 0
     for window in range(nwindows):
+        count += 1
         # Identify window boundaries in x and y (and right and left)
         win_y_low = binary_warped.shape[0] - (window + 1) * window_height
         win_y_high = binary_warped.shape[0] - window * window_height
@@ -214,6 +224,14 @@ def detect_lanelines_swin(binary_warped):
         if len(good_right_inds) > minpix:
             rightx_current = np.int(np.mean(nonzerox[good_right_inds]))
 
+        lcount += len(good_left_inds)
+        rcount += len(good_right_inds)
+        #print("Window #{}, Lpixels = {}, Rpixels = {}".format(count,lcount,rcount))
+        #if lcount>20000 or rcount>20000:
+        #    break
+        if win_xleft_low<=5 or win_xright_high>=(nx-5):
+            break
+
     # Concatenate the arrays of indices
     left_lane_inds = np.concatenate(left_lane_inds)
     right_lane_inds = np.concatenate(right_lane_inds)
@@ -225,10 +243,15 @@ def detect_lanelines_swin(binary_warped):
     righty = nonzeroy[right_lane_inds]
 
     # Fit a second order polynomial to each
-    left_fit = np.polyfit(lefty, leftx, 2)
-    right_fit = np.polyfit(righty, rightx, 2)
+    try:
+        left_fit = np.polyfit(lefty, leftx, 2)
+        right_fit = np.polyfit(righty, rightx, 2)
+        #print(left_fit,right_fit)
+    except TypeError:
+        left_fit = [0.0, 0.0, -200.0]
+        right_fit = [0.0, 0.0, 450.0]
 
-    return left_fit, right_fit, out_img
+    return left_fit, right_fit, out_img, len(leftx), len(lefty)
 
 def static_vars(**kwargs):
     def decorate(func):
@@ -237,19 +260,24 @@ def static_vars(**kwargs):
         return func
     return decorate
 
-@static_vars(old_left_fit=None, old_right_fit=None)
+@static_vars(old_left_fit=None, old_right_fit=None, old_nleft=0, old_nright=0)
 def detect_lanelines(binary_warped,alpha=1.0,average_curves=True):
     olf = detect_lanelines.old_left_fit
     orf = detect_lanelines.old_right_fit
+    onl = detect_lanelines.old_nleft
+    onr = detect_lanelines.old_nright
 
     # The lane-detection frmo previous curve does not work properly when there is too much deviation
     #left_fit, right_fit, out_img = detect_lanelines_near(binary_warped, olf, orf)
 
     # Detect using moving windows
-    left_fit, right_fit, out_img = detect_lanelines_swin(binary_warped)
+    left_fit, right_fit, out_img, nleft, nright = detect_lanelines_swin(binary_warped)
+
     if olf is None or orf is None:
         olf = left_fit
         orf = right_fit
+        onl = nleft
+        onr = nright
 
     # Left and right curves should have same coefficients on left and right for second order terms
     if average_curves:
@@ -266,12 +294,25 @@ def detect_lanelines(binary_warped,alpha=1.0,average_curves=True):
 
 
     # Moving average of curve fit
-    left_fit = alpha*left_fit + (1-alpha)*olf
-    right_fit = alpha * right_fit + (1-alpha) * orf
+    ldiff = (left_fit - olf)/olf
+    rdiff = (right_fit - orf)/orf
+    outstr = "ldiff = {}, rdiff = {}".format(ldiff,rdiff)
+    cv2.putText(out_img,outstr, (20, 20), cv2.FONT_HERSHEY_PLAIN, 2, (255,255,255), 1)
 
+    if nleft<5000:
+        left_fit = olf
+        right_fit = orf
+    # elif max(ldiff)>0.5 or max(rdiff)>0.5:
+    #     left_fit = olf
+    #     right_fit = orf
+    else:
+        detect_lanelines.old_left_fit = left_fit
+        detect_lanelines.old_right_fit = right_fit
+        detect_lanelines.old_nleft = nleft
+        detect_lanelines.old_nright = nright
+        left_fit = alpha*left_fit + (1-alpha)*olf
+        right_fit = alpha * right_fit + (1-alpha) * orf
 
-    detect_lanelines.old_left_fit = left_fit
-    detect_lanelines.old_right_fit = right_fit
 
     return left_fit, right_fit, out_img
 
@@ -392,8 +433,8 @@ def process_video(vidfile,writeToFile=True):
     clip1 = VideoFileClip(vidfile)
     vpipeline = lambda x: pipeline(x,mtx,dist)
     white_clip = clip1.fl_image(vpipeline)
-    #white_clip.preview(fps=25)
-    if writeToFile: white_clip.write_videofile(lanevid, audio=False)
+    white_clip.preview(fps=25)
+    #if writeToFile: white_clip.write_videofile(lanevid, audio=False)
     return lanevid
 
 

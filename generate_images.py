@@ -24,7 +24,7 @@ if __name__=='__main__':
     fig1.savefig('output_images/figure_1.png')
 
     # Distortion correction
-    for imgfile in glob.glob('test_images/test3.jpg'):
+    for imgfile in glob.glob('test_images/frame*.jpg'):
         #imgfile = 'test_images/test3.jpg'
         img = plt.imread(imgfile)
         mtx, dist = calibrate_camera()
@@ -45,7 +45,7 @@ if __name__=='__main__':
         fig4= plot2(binary_warped,undist_warped,'binary_warped','undistorted_warped')
         fig4.savefig('output_images/figure_4.png')
 
-        left_fit, right_fit, win_img = detect_lanelines(binary_warped[:,:,0],alpha=0.9)
+        left_fit, right_fit, win_img = detect_lanelines(binary_warped[:,:,1],alpha=0.9)
         overlaid,overlay1,overlay2,offset_distance,rcurve= overlay_lane(undistorted, left_fit, right_fit, Minv)
 
         fig5= plot2(win_img,overlay1,'Laneline Identification','Lane mask')
