@@ -433,8 +433,8 @@ def process_video(vidfile,writeToFile=True):
     clip1 = VideoFileClip(vidfile)
     vpipeline = lambda x: pipeline(x,mtx,dist)
     white_clip = clip1.fl_image(vpipeline)
-    white_clip.preview(fps=25)
-    #if writeToFile: white_clip.write_videofile(lanevid, audio=False)
+    #white_clip.preview(fps=25)
+    if writeToFile: white_clip.write_videofile(lanevid, audio=False)
     return lanevid
 
 
