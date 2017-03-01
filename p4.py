@@ -108,6 +108,17 @@ def perspective_transform(xsize,ysize):
          [1041, 678],
          [265, 678]])
 
+    # x1 = 515
+    # x2 = 10
+    # y1 = 480
+    # src = np.float32(
+    #     [[x1, y1],
+    #      [xsize-x1, y1],
+    #      [xsize-x2, ysize],
+    #      [x2, ysize]])
+
+
+
     xoff, yoff = 300, 0
     dst = np.float32(
         [[xoff, yoff],
@@ -151,7 +162,7 @@ def detect_lanelines_swin(binary_warped):
     ny, nx = binary_warped.shape
 
     # Take a histogram of the bottom half of the image
-    histogram = np.sum(binary_warped[int(binary_warped.shape[0]/2):, :], axis=0)
+    histogram = np.sum(binary_warped[int(0.75*ny):, :], axis=0)
 
     # Create an output image to draw on and  visualize the result
     out_img = np.dstack((binary_warped, binary_warped, binary_warped)) #* 255
@@ -161,6 +172,10 @@ def detect_lanelines_swin(binary_warped):
     midpoint = np.int(histogram.shape[0] / 2)
     leftx_base = np.argmax(histogram[:midpoint])
     rightx_base = np.argmax(histogram[midpoint:]) + midpoint
+
+    # Space out base points
+    if abs((rightx_base-leftx_base)-680) > 50:
+        rightx_base = leftx_base + 680
 
     # Choose the number of sliding windows
     nwindows = 11
@@ -264,8 +279,6 @@ def static_vars(**kwargs):
 def detect_lanelines(binary_warped,alpha=1.0,average_curves=True):
     olf = detect_lanelines.old_left_fit
     orf = detect_lanelines.old_right_fit
-    onl = detect_lanelines.old_nleft
-    onr = detect_lanelines.old_nright
 
     # The lane-detection frmo previous curve does not work properly when there is too much deviation
     #left_fit, right_fit, out_img = detect_lanelines_near(binary_warped, olf, orf)
@@ -276,42 +289,40 @@ def detect_lanelines(binary_warped,alpha=1.0,average_curves=True):
     if olf is None or orf is None:
         olf = left_fit
         orf = right_fit
-        onl = nleft
-        onr = nright
 
-    # Left and right curves should have same coefficients on left and right for second order terms
-    if average_curves:
+    pix_threshold1 = 15000
+    pix_threshold2 = 10000
+    lane_width = 680
+    if nleft>pix_threshold1 and nright>pix_threshold1:
+        # Very good confidence in both curves
         left_fit[0] = np.average([left_fit[0],right_fit[0]])
         right_fit[0] = left_fit[0]
         left_fit[1] = np.average([left_fit[1],right_fit[1]])
         right_fit[1] = left_fit[1]
 
         # Don't get lanes shift too much
-        lane_width = 680.0
         center = np.average([left_fit[2],right_fit[2]])
         left_fit[2] = center - lane_width/2.0
         right_fit[2] = center + lane_width/2.0
+    elif nleft>pix_threshold2:
+        # Good confidence in left curve
+        right_fit[:2] = left_fit[:2]
+        right_fit[2] = left_fit[2] + lane_width
 
+    elif nright>pix_threshold2:
+        # Good confidence in right curve
+        left_fit[:2] = right_fit[:2]
+        left_fit[2] = right_fit[2] - lane_width
 
-    # Moving average of curve fit
-    ldiff = (left_fit - olf)/olf
-    rdiff = (right_fit - orf)/orf
-    outstr = "ldiff = {}, rdiff = {}".format(ldiff,rdiff)
-    cv2.putText(out_img,outstr, (20, 20), cv2.FONT_HERSHEY_PLAIN, 2, (255,255,255), 1)
-
-    if nleft<5000:
+    else:
+        # No confidence in either. Use old values
         left_fit = olf
         right_fit = orf
-    # elif max(ldiff)>0.5 or max(rdiff)>0.5:
-    #     left_fit = olf
-    #     right_fit = orf
-    else:
-        detect_lanelines.old_left_fit = left_fit
-        detect_lanelines.old_right_fit = right_fit
-        detect_lanelines.old_nleft = nleft
-        detect_lanelines.old_nright = nright
-        left_fit = alpha*left_fit + (1-alpha)*olf
-        right_fit = alpha * right_fit + (1-alpha) * orf
+
+    detect_lanelines.old_left_fit = left_fit
+    detect_lanelines.old_right_fit = right_fit
+    detect_lanelines.old_nleft = nleft
+    detect_lanelines.old_nright = nright
 
 
     return left_fit, right_fit, out_img
@@ -320,8 +331,8 @@ def overlay_lane(undistorted, left_fit, right_fit, Minv):
 
     ny, nx, nc = undistorted.shape
 
-    lfit = lambda y: left_fit[0] * y ** 2 + left_fit[1] * y + left_fit[2]
-    rfit = lambda y: right_fit[0] * y ** 2 + right_fit[1] * y + right_fit[2]
+    lfit = lambda y: left_fit[0] * (y**2) + left_fit[1] * y + left_fit[2]
+    rfit = lambda y: right_fit[0] * (y**2) + right_fit[1] * y + right_fit[2]
 
     # Generate x and y values for plotting
     ybar = np.linspace(0, undistorted.shape[0] - 1, undistorted.shape[0])
@@ -361,24 +372,24 @@ def overlay_lane(undistorted, left_fit, right_fit, Minv):
     cv2.drawMarker(overlay, (x1, y1), (0, 0, 255), cv2.MARKER_CROSS,
                    markerSize=5, thickness=1, line_type=cv2.LINE_AA)
 
-    yfac = 3.7/700 # Pixel to meters (Y)
-    xfac = 100.0/720 # Pixel to meters (X)
-    offset_distance = np.round((x0-x1)*yfac,2)
-
+    xfac = 3.7/700 # Pixel to meters (Y)
+    yfac = 100.0/720 # Pixel to meters (X)
+    offset_distance = np.round((x0-x1)*xfac,2)
 
     # Curvature
-    yvals = np.linspace(0,ny,10)
+    yvals = np.array([ny, 0.75*ny, 0.5*ny])
     xvals = lfit(yvals)
 
     xnew = xvals*xfac
     ynew = yvals*yfac
-    fitnew = np.polyfit(xnew,ynew,2)
+    fitnew = np.polyfit(ynew,xnew,2)
 
     A = fitnew[0]
     B = fitnew[1]
+    yeval = y1*yfac/2.0
 
-    rcurve = ((1 + (2*A*(y0*yfac)+B)**2)**1.5) / np.absolute(2*A)
-    #print(left_fit,A,B,rcurve)
+
+    rcurve = ((1 + (2*A*yeval+B)**2)**1.5) / np.absolute(2*A)
     rcurve = np.round(rcurve,2)
     overlay_unwarp = cv2.warpPerspective(overlay, Minv, (nx, ny), flags=cv2.INTER_LINEAR)
 
@@ -387,7 +398,7 @@ def overlay_lane(undistorted, left_fit, right_fit, Minv):
 
     return overlaid,overlay,overlay_unwarp, offset_distance, rcurve
 
-
+@static_vars(old_rcurve=None)
 def pipeline(img,mtx=None,dist=None,M=None,Minv=None,plot=False):
     """
     Perform the following steps in sequence to find lanes
@@ -420,8 +431,25 @@ def pipeline(img,mtx=None,dist=None,M=None,Minv=None,plot=False):
     binary_warped = cv2.warpPerspective(lane_pixels, M, (xsize, ysize), flags=cv2.INTER_LINEAR)
     undist_warped = cv2.warpPerspective(undistorted, M, (xsize, ysize), flags=cv2.INTER_LINEAR)
 
-    left_fit, right_fit, win_img = detect_lanelines(binary_warped[:,:,0],alpha=0.9)
+    left_fit, right_fit, win_img = detect_lanelines(binary_warped[:,:,0])
     overlaid,overlay1,overlay2,offset_distance,rcurve= overlay_lane(undistorted, left_fit, right_fit, Minv)
+
+    #offset_distance,rcurve = get_offset_rcurve(left_fit,right_fit,xsize,ysize)
+
+    # save in static vars
+    if pipeline.old_rcurve is None:
+        orc = rcurve
+    else:
+        orc = pipeline.old_rcurve
+
+    # if rcurve<100:
+    #     rcurve = -100.0
+    # elif rcurve<orc and abs(rcurve-orc)/orc > 0.2:
+    #     rcurve = orc
+    # else:
+    #     pipeline.old_rcurve = rcurve
+
+
 
     out = diag_screen(overlaid, undistorted, undist_warped, lane_pixels, binary_warped, win_img, overlay1,overlay2,offset_distance,rcurve)
 
@@ -441,10 +469,13 @@ def process_video(vidfile,writeToFile=True):
 def diag_screen(mainDiagScreen,diag1,diag2,diag3,diag4,diag5,diag6,diag7,offset=0,curvature=0):
     # middle panel text example
     # using cv2 for drawing text in diagnostic pipeline.
-    font = cv2.FONT_HERSHEY_COMPLEX
+    font = cv2.FONT_HERSHEY_PLAIN
     middlepanel = np.zeros((320, 240, 3), dtype=np.uint8)
     cv2.putText(middlepanel, 'Curvature:{} m.'.format(curvature), (20, 60), font, 0.5, (255,255,255), 1)
     cv2.putText(middlepanel, 'Offset:{} m.'.format(offset), (20, 90), font, 0.5, (255,255,255), 1)
+
+    cv2.putText(mainDiagScreen, 'Curvature:{} m.'.format(curvature), (20, 60), font, 2, (255,255,255), 1)
+    cv2.putText(mainDiagScreen, 'Offset:{} m.'.format(offset), (20, 90), font, 2, (255,255,255), 1)
 
     # assemble the screen
     diagScreen = np.zeros((960, 1600, 3),np.uint8)

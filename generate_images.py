@@ -24,7 +24,7 @@ if __name__=='__main__':
     fig1.savefig('output_images/figure_1.png')
 
     # Distortion correction
-    for imgfile in glob.glob('test_images/frame*.jpg'):
+    for imgfile in glob.glob('test_images/test3.jpg'):
         #imgfile = 'test_images/test3.jpg'
         img = plt.imread(imgfile)
         mtx, dist = calibrate_camera()

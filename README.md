@@ -13,6 +13,7 @@ The python script that contains the entire implementation is **p4.py**. The main
 [image4]: ./output_images/figure_4.png "Perspective Transform"
 [image5]: ./output_images/figure_5.png "Lane Identification"
 [image6]: ./output_images/figure_6.png "Unwarp and Overlay"
+[image7]: ./output_images/figure_7.png "Curvature and Offset"
 [video1]: ./project_video_out.mp4 "Performance"
 
 
@@ -48,6 +49,7 @@ Nevertheless here is the sequence:
 - Use a sobel filter in the x-direction and threshold in a high-range to pick lines away from horizontal
 - Threshold on s-channel to pick whitish and yellowish pixels
 - Based on some a [blog post](https://medium.com/@royhuang_87663/how-to-find-threshold-f05f6b697a00#.9jajirkwl) I read from another student, I used thresholds on all three channels to again pick white/yellow pixels
+- **Update**: Now using the color thresholds from HSV space based on another [blog post](https://chatbotslife.com/robust-lane-finding-using-advanced-computer-vision-techniques-46875bb3c8aa?gi=2b00a1f397f)
 - Finally I return a binary image that uses bitwise OR to combine all the above computed thresholds
 
 The function is reproduced here:
@@ -82,13 +84,17 @@ def transform_binary(img, sobel_kernel=3, s_thresh=(150, 255), sx_thresh=(20, 10
     color_binary = np.dstack((combined_binary,combined_binary,combined_binary))
 
     # pick from colors
-    yellow = cv2.inRange(hls,(10,0,200),(40,200,255))
-    white =  cv2.inRange(hls,(10,200,150),(40,250,255))
+    # hls = cv2.cvtColor(img, cv2.COLOR_RGB2HLS)
+    # yellow = cv2.inRange(hls,(10,0,200),(40,200,255))
+    # white =  cv2.inRange(hls,(10,200,150),(40,250,255))
+
+    hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+    yellow = cv2.inRange(hsv,(0,100,100),(50,255,255))
+    white =  cv2.inRange(hsv,(20,0,180),(255,80,255))
     yw = yellow | white | combined_binary
     yw_color = np.dstack((yw,yw,yw))
 
     return yw_color #color_binary
-
 ```
 
 The result on one of the test images is here:
@@ -130,14 +136,21 @@ The effect of applying this transformation on both the binary thresholded image 
 
 #### 2.4 Describe how (and identify where in your code) you identified lane-line pixels and fit their positions with a polynomial?
 
-The function **detect_lanelines** is called to compute the quadratic polynomial coefficents corresponding to the lane line pixels that are found. Here a python decorator (*static_vars*) is used to store the computed polynomial fits from the previous frame also. This allows us to reduce the jitter by smoothing out the frame-to-frame computations. The argument **alpha** to this function which corresponds to the normalized weight for the current frame computation was set to ~ 0.95, which resulted in 5% of the values from the previous frame to be used.
+The function **detect_lanelines** is called to compute the quadratic polynomial coefficents corresponding to the lane line pixels that are found. Here a python decorator (*static_vars*) is used to store the computed polynomial fits from the previous frame also. This allows us to reduce the jitter by smoothing out the frame-to-frame computations. 
 
 Another feature implemented here is the averaging of the polynomial coefficients such that both the lane lines (left and right) remain parallel (coefficients of first and second order) and of constant width (coefficient of zero'th order).
+
+**Update**: The function has been modified from the first submission the following ways:
+* The windowing routine now skips searching for more pixels once it has reached either the left or the right edge
+* The confidence in the polynomial fit increases as the number of non-zero pixels found grows larger.
+    - As a corollary, if the number of non-zero pixels found by the windowing routine is low, the confidence in the resulting polynomial fit is also low
+    - Using this property, if we have low confidence in the fits, we use the last best fit from a previous frame.
+* These changes have resulted in a much smoother behaviour as seen in the video further below.
 
 The corresponding function is reproduced below:
 
 ```python
-@static_vars(old_left_fit=None, old_right_fit=None)
+@static_vars(old_left_fit=None, old_right_fit=None, old_nleft=0, old_nright=0)
 def detect_lanelines(binary_warped,alpha=1.0,average_curves=True):
     olf = detect_lanelines.old_left_fit
     orf = detect_lanelines.old_right_fit
@@ -146,30 +159,46 @@ def detect_lanelines(binary_warped,alpha=1.0,average_curves=True):
     #left_fit, right_fit, out_img = detect_lanelines_near(binary_warped, olf, orf)
 
     # Detect using moving windows
-    left_fit, right_fit, out_img = detect_lanelines_swin(binary_warped)
+    left_fit, right_fit, out_img, nleft, nright = detect_lanelines_swin(binary_warped)
+
     if olf is None or orf is None:
         olf = left_fit
         orf = right_fit
 
-    # Left and right curves should have same coefficients on left and right for second order terms
-    if average_curves:
+    pix_threshold1 = 15000
+    pix_threshold2 = 10000
+    lane_width = 680
+    if nleft>pix_threshold1 and nright>pix_threshold1:
+        # Very good confidence in both curves
         left_fit[0] = np.average([left_fit[0],right_fit[0]])
         right_fit[0] = left_fit[0]
         left_fit[1] = np.average([left_fit[1],right_fit[1]])
         right_fit[1] = left_fit[1]
 
         # Don't get lanes shift too much
-        lane_width = 680.0
         center = np.average([left_fit[2],right_fit[2]])
         left_fit[2] = center - lane_width/2.0
         right_fit[2] = center + lane_width/2.0
+    elif nleft>pix_threshold2:
+        # Good confidence in left curve
+        right_fit[:2] = left_fit[:2]
+        right_fit[2] = left_fit[2] + lane_width
 
-    # Moving average of curve fit
-    left_fit = alpha*left_fit + (1-alpha)*olf
-    right_fit = alpha * right_fit + (1-alpha) * orf
+    elif nright>pix_threshold2:
+        # Good confidence in right curve
+        left_fit[:2] = right_fit[:2]
+        left_fit[2] = right_fit[2] - lane_width
+
+    else:
+        # No confidence in either. Use old values
+        left_fit = olf
+        right_fit = orf
 
     detect_lanelines.old_left_fit = left_fit
     detect_lanelines.old_right_fit = right_fit
+    detect_lanelines.old_nleft = nleft
+    detect_lanelines.old_nright = nright
+
 
     return left_fit, right_fit, out_img
 ```
@@ -203,22 +232,24 @@ To compute the radius of curvature, a set of points that fall on the polynomial 
 
 ```python
     # Curvature
-    yvals = np.linspace(0,ny,10)
+    yvals = np.array([ny, 0.75*ny, 0.5*ny])
     xvals = lfit(yvals)
 
     xnew = xvals*xfac
     ynew = yvals*yfac
-    fitnew = np.polyfit(xnew,ynew,2)
+    fitnew = np.polyfit(ynew,xnew,2)
 
     A = fitnew[0]
     B = fitnew[1]
+    yeval = y1*yfac/2.0
 
-    rcurve = ((1 + (2*A*(y0*yfac)+B)**2)**1.5) / np.absolute(2*A)
-    #print(left_fit,A,B,rcurve)
+    rcurve = ((1 + (2*A*yeval+B)**2)**1.5) / np.absolute(2*A)
     rcurve = np.round(rcurve,2)
 ```
 
-Note: I attempted to try converting the polynomial coefficients directly (using **Anew=A\*xfac/yfac^2** and **Bnew=B\*xfac/yfac** but that did not work - our polymial is fit as x=f(y) instead of y=f(x) and some of these factors need to be reciprocated. Need to investigate this later)
+**Update**: I updated the polynomail fit equation (changed independant variable to x) and this resulted in more reasonable values of the radius of curvature. Below image shows a frame with radius of curvature and center-offset displayed:
+
+![alt text][image7]
 
 #### 2.6 Provide an example image of your result plotted back down onto the road such that the lane area is identified clearly.
 
@@ -236,7 +267,7 @@ overlaid,overlay1,overlay2,offset_distance,rcurve= overlay_lane(undistorted, lef
 
 https://youtu.be/ab58qQBpU3k
 
-[![Video](http://img.youtube.com/vi/ab58qQBpU3k/0.jpg)](http://www.youtube.com/watch?v=ab58qQBpU3k "Advanced Lane Finding")
+[![Video](http://img.youtube.com/vi/rhONam9MUFc/0.jpg)](http://www.youtube.com/watch?v=rhONam9MUFc "Advanced Lane Finding")
 
 
 ### 4. Discussion 
@@ -250,5 +281,4 @@ By no means is this project over for me. The performance on the challenge videos
 - Tune the moving-window-selector to identify proper lane pixels.
 
 I will update the [git repository](https://github.com/bhiriyur/P4_Advanced_Lane_Lines) for this project as and when I find the time to make the aforementioned improvements.
-
 
