@@ -14,6 +14,16 @@ def plot2(img1,img2,caption1,caption2):
 
     return fig1
 
+def draw_points(img,pts):
+    mt = cv2.MARKER_SQUARE
+    out = np.copy(img)
+    for i in range(4):
+        pt = tuple(pts[i,:])
+        out = cv2.drawMarker(out, pt, (255, 0, 0),
+                             markerType=mt, markerSize=10, thickness=4, line_type=cv2.LINE_AA)
+    return out
+
+
 if __name__=='__main__':
     # Distortion correction
     imgfile = 'camera_cal/calibration1.jpg'
@@ -39,10 +49,13 @@ if __name__=='__main__':
 
         # Perspective transformation
         ysize, xsize, nc = img.shape
-        M, Minv = perspective_transform(xsize, ysize)
+        M, Minv, src, dst = perspective_transform(xsize, ysize)
         binary_warped = cv2.warpPerspective(lane_pixels, M, (xsize, ysize), flags=cv2.INTER_LINEAR)
         undist_warped = cv2.warpPerspective(undistorted, M, (xsize, ysize), flags=cv2.INTER_LINEAR)
-        fig4= plot2(binary_warped,undist_warped,'binary_warped','undistorted_warped')
+        simg = draw_points(undistorted,src)
+        dimg = draw_points(undist_warped,dst)
+        fig4 = plot2(simg, dimg, 'Source', 'Destination-Warped')
+        #fig4= plot2(binary_warped,undist_warped,'binary_warped','undistorted_warped')
         fig4.savefig('output_images/figure_4.png')
 
         left_fit, right_fit, win_img = detect_lanelines(binary_warped[:,:,1],alpha=0.9)

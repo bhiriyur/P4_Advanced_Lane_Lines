@@ -102,22 +102,21 @@ def transform_binary(img, sobel_kernel=3, s_thresh=(150, 255), sx_thresh=(20, 10
 
 def perspective_transform(xsize,ysize):
     """Transforms the camera image to top-down view"""
-    src = np.float32(
-        [[610, 440],
-         [670, 440],
-         [1041, 678],
-         [265, 678]])
-
-    # x1 = 515
-    # x2 = 10
-    # y1 = 480
     # src = np.float32(
-    #     [[x1, y1],
-    #      [xsize-x1, y1],
-    #      [xsize-x2, ysize],
-    #      [x2, ysize]])
+    #     [[610, 440],
+    #      [670, 440],
+    #      [1041, 678],
+    #      [265, 678]])
 
-
+    x1 = 580
+    x2 = 265
+    y1 = 460
+    y2 = 40
+    src = np.float32(
+        [[x1, y1],
+         [xsize-x1, y1],
+         [xsize-x2+35, ysize-y2],
+         [x2, ysize-y2]])
 
     xoff, yoff = 300, 0
     dst = np.float32(
@@ -128,7 +127,7 @@ def perspective_transform(xsize,ysize):
     M = cv2.getPerspectiveTransform(src, dst)
     Minv = cv2.getPerspectiveTransform(dst, src)
 
-    return M, Minv
+    return M, Minv, src, dst
 
 def detect_lanelines_near(binary_warped,left_fit, right_fit):
     # Assume you now have a new warped binary image
@@ -327,6 +326,30 @@ def detect_lanelines(binary_warped,alpha=1.0,average_curves=True):
 
     return left_fit, right_fit, out_img
 
+def curvature(left_fit,y):
+
+    ny = 760
+    xfac = 3.7/700 # Pixel to meters (Y)
+    yfac = 100.0/720 # Pixel to meters (X)
+
+    lfit = lambda y: left_fit[0] * (y ** 2) + left_fit[1] * y + left_fit[2]
+
+    # Curvature
+    yvals = np.array([ny, 0.75*ny, 0.5*ny])
+    xvals = lfit(yvals)
+
+    xnew = xvals*xfac
+    ynew = yvals*yfac
+    fitnew = np.polyfit(ynew,xnew,2)
+
+    A = fitnew[0]
+    B = fitnew[1]
+    yeval = y*yfac/2.0
+
+    rcurve = ((1 + (2*A*yeval+B)**2)**1.5) / np.absolute(2*A)
+    return np.round(rcurve,2)
+
+
 def overlay_lane(undistorted, left_fit, right_fit, Minv):
 
     ny, nx, nc = undistorted.shape
@@ -388,7 +411,6 @@ def overlay_lane(undistorted, left_fit, right_fit, Minv):
     B = fitnew[1]
     yeval = y1*yfac/2.0
 
-
     rcurve = ((1 + (2*A*yeval+B)**2)**1.5) / np.absolute(2*A)
     rcurve = np.round(rcurve,2)
     overlay_unwarp = cv2.warpPerspective(overlay, Minv, (nx, ny), flags=cv2.INTER_LINEAR)
@@ -398,7 +420,7 @@ def overlay_lane(undistorted, left_fit, right_fit, Minv):
 
     return overlaid,overlay,overlay_unwarp, offset_distance, rcurve
 
-@static_vars(old_rcurve=None)
+@static_vars(old_rcurve=None,old_lfit=None,old_rfit=None,last=0)
 def pipeline(img,mtx=None,dist=None,M=None,Minv=None,plot=False):
     """
     Perform the following steps in sequence to find lanes
@@ -419,7 +441,8 @@ def pipeline(img,mtx=None,dist=None,M=None,Minv=None,plot=False):
         mtx, dist = calibrate_camera()
 
     if M is None or Minv is None:
-        M, Minv = perspective_transform(xsize, ysize)
+        M, Minv, src, dst = perspective_transform(xsize, ysize)
+
 
     # Undistort camera
     undistorted=undistort_image(img, mtx, dist)
@@ -432,24 +455,37 @@ def pipeline(img,mtx=None,dist=None,M=None,Minv=None,plot=False):
     undist_warped = cv2.warpPerspective(undistorted, M, (xsize, ysize), flags=cv2.INTER_LINEAR)
 
     left_fit, right_fit, win_img = detect_lanelines(binary_warped[:,:,0])
-    overlaid,overlay1,overlay2,offset_distance,rcurve= overlay_lane(undistorted, left_fit, right_fit, Minv)
-
-    #offset_distance,rcurve = get_offset_rcurve(left_fit,right_fit,xsize,ysize)
+    rcurve = curvature(left_fit,450)
 
     # save in static vars
-    if pipeline.old_rcurve is None:
+    if pipeline.old_rcurve == None:
         orc = rcurve
+        olf = left_fit
+        orf = right_fit
     else:
         orc = pipeline.old_rcurve
+        olf = pipeline.old_lfit
+        orf = pipeline.old_rfit
 
-    # if rcurve<100:
-    #     rcurve = -100.0
-    # elif rcurve<orc and abs(rcurve-orc)/orc > 0.2:
-    #     rcurve = orc
-    # else:
-    #     pipeline.old_rcurve = rcurve
+    # If too much change in rcurve, use old values
+    #print("Old = {}, New = {}".format(orc,rcurve))
+    if orc-rcurve>=rcurve and pipeline.last<=3:
+        #print("Using Old Values: {}".format(olf))
+        rcurve = orc
+        left_fit = olf
+        right_fit = orf
+        pipeline.last += 1
+    else:
+        alpha = 0.9
+        left_fit = alpha * left_fit + (1 - alpha) * olf
+        right_fit = alpha * right_fit + (1 - alpha) * orf
+        pipeline.last = 0
 
+    pipeline.old_rcurve = rcurve
+    pipeline.old_lfit = left_fit
+    pipeline.old_rfit = right_fit
 
+    overlaid,overlay1,overlay2,offset_distance,rcurve= overlay_lane(undistorted, left_fit, right_fit, Minv)
 
     out = diag_screen(overlaid, undistorted, undist_warped, lane_pixels, binary_warped, win_img, overlay1,overlay2,offset_distance,rcurve)
 
@@ -458,21 +494,25 @@ def pipeline(img,mtx=None,dist=None,M=None,Minv=None,plot=False):
 def process_video(vidfile,writeToFile=True):
     mtx, dist = calibrate_camera()
     lanevid = vidfile.split('.')[0] + '_out.mp4'
-    clip1 = VideoFileClip(vidfile)
+    clip1 = VideoFileClip(vidfile) #.subclip(35,42)
     vpipeline = lambda x: pipeline(x,mtx,dist)
     white_clip = clip1.fl_image(vpipeline)
     #white_clip.preview(fps=25)
     if writeToFile: white_clip.write_videofile(lanevid, audio=False)
     return lanevid
 
-
+@static_vars(framecounter = 0, time = 0.0)
 def diag_screen(mainDiagScreen,diag1,diag2,diag3,diag4,diag5,diag6,diag7,offset=0,curvature=0):
     # middle panel text example
     # using cv2 for drawing text in diagnostic pipeline.
-    font = cv2.FONT_HERSHEY_PLAIN
+    dt = 1.0/25
+    diag_screen.framecounter += 1
+    diag_screen.time += dt
+
+    font = cv2.FONT_HERSHEY_COMPLEX_SMALL
     middlepanel = np.zeros((320, 240, 3), dtype=np.uint8)
-    cv2.putText(middlepanel, 'Curvature:{} m.'.format(curvature), (20, 60), font, 0.5, (255,255,255), 1)
-    cv2.putText(middlepanel, 'Offset:{} m.'.format(offset), (20, 90), font, 0.5, (255,255,255), 1)
+    cv2.putText(middlepanel, 'Frame # {}'.format(diag_screen.framecounter), (20, 100), font, 1, (255,255,255), 1)
+    cv2.putText(middlepanel, 'Time = :{:.2f}'.format(diag_screen.time), (20, 150), font, 1, (255,255,255), 1)
 
     cv2.putText(mainDiagScreen, 'Curvature:{} m.'.format(curvature), (20, 60), font, 2, (255,255,255), 1)
     cv2.putText(mainDiagScreen, 'Offset:{} m.'.format(offset), (20, 90), font, 2, (255,255,255), 1)
