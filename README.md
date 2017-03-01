@@ -13,7 +13,7 @@ The python script that contains the entire implementation is **p4.py**. The main
 [image4]: ./output_images/figure_4.png "Perspective Transform"
 [image5]: ./output_images/figure_5.png "Lane Identification"
 [image6]: ./output_images/figure_6.png "Unwarp and Overlay"
-[image7]: ./output_images/figure_7.png "Curvature and Offset"
+[image7]: ./output_images/rcurve.png "Curvature and Offset"
 [video1]: ./project_video_out.mp4 "Performance"
 
 
